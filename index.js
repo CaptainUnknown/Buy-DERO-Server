@@ -2,6 +2,7 @@ const paypal = require("@paypal/checkout-server-sdk");
 const { MongoClient } = require('mongodb');
 const express = require('express');
 const dotenv = require('dotenv');
+const axios = require('axios');
 const cors = require('cors');
 const PORT = 8000;
 
@@ -17,27 +18,33 @@ app.use(express.urlencoded({ extended: true }));
 const Environment = process.env.NODE_ENV === "production" ? paypal.core.LiveEnvironment : paypal.core.SandboxEnvironment;
 const paypalClient = new paypal.core.PayPalHttpClient( new Environment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET));
 
-const getExchangeRate = async () => {
+const getExchangeRate = async (req, res) => {
   let exchangeRate;
-  var rawResponse;
+  let rawResponse;
 
-  await fetch("https://api.livecoinwatch.com/coins/single", {
-    body: "{\"currency\":\"USD\",\"code\":\"DERO\",\"meta\":false}",
+
+  let data = JSON.stringify("{\"currency\":\"USD\",\"code\":\"DERO\",\"meta\":false}");
+
+  let config = {
+    method: 'post',
+    url: 'https://api.livecoinwatch.com/coins/single',
     headers: {
-      "Content-Type": "application/json",
-      "X-Api-Key": process.env.LCW_API_KEY
+      'X-Api-Key': 'c8573f42-e797-43e9-811d-07effb255ad8',
+      'Content-Type': 'application/json'
     },
-    method: "POST"
-  })
-  .then(res => res.json())
-  .then(data => {
+    data : data
+  };
+
+  axios(config)
+  .then(function (response) {
     rawResponse = data;
-    
+
     const content = rawResponse;
     exchangeRate = content.rate;
+    console.log(JSON.stringify(response.data));
   })
-  .catch(err => {
-    res.status(503).json({ error: err.message })
+  .catch(function (error) {
+    res.status(503).json({ error: error.message });
   });
 
   console.log();
@@ -47,7 +54,7 @@ const getExchangeRate = async () => {
 app.post("/create-order", async (req, res) => {
   const currentRate = await getExchangeRate();
   const request = new paypal.orders.OrdersCreateRequest();
-  const total = currentRate * req.body.DEROAmount;
+  const total = currentRate * req.body.amount;
   request.prefer("return=representation")
   request.requestBody({
     intent: "CAPTURE",
@@ -64,12 +71,12 @@ app.post("/create-order", async (req, res) => {
           },
         },
         items: {
-          name: `DERO to ${req.body.walletAddress}`,
+          name: `DERO to ${req.body.address}`,
           unit_amount: {
             currency_code: "USD",
             value: currentRate,
           },
-          quantity: req.body.DEROAmount,
+          quantity: req.body.amount,
         },
       },
     ],
