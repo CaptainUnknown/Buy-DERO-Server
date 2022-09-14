@@ -1,9 +1,9 @@
-const PORT = 8000;
-const express = require('express');
+const paypal = require("@paypal/checkout-server-sdk");
 const { MongoClient } = require('mongodb');
-const cors = require('cors');
-const puppeteer = require('puppeteer');
+const express = require('express');
 const dotenv = require('dotenv');
+const cors = require('cors');
+const PORT = 8000;
 
 const app = express();
 dotenv.config();
@@ -14,18 +14,74 @@ app.use(express.static("."));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+const Environment = process.env.NODE_ENV === "production" ? paypal.core.LiveEnvironment : paypal.core.SandboxEnvironment;
+const paypalClient = new paypal.core.PayPalHttpClient( new Environment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET));
 
-//Recieves a validation request from the plugin
-app.post('/validate', async (request, response) => {
-  const txInfo = request.body;
+const getExchangeRate = async () => {
+  let exchangeRate;
+  var rawResponse;
 
-  if (await validateTXHandler(txInfo)) {
-    response.status(202).send('Transaction is valid');
+  await fetch("https://api.livecoinwatch.com/coins/single", {
+    body: "{\"currency\":\"USD\",\"code\":\"DERO\",\"meta\":false}",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Api-Key": process.env.LCW_API_KEY
+    },
+    method: "POST"
+  })
+  .then(res => res.json())
+  .then(data => {
+    rawResponse = data;
+    
+    const content = rawResponse;
+    exchangeRate = content.rate;
+  })
+  .catch(err => {
+    res.status(503).json({ error: err.message })
+  });
+
+  console.log();
+  return exchangeRate;
+}
+
+app.post("/create-order", async (req, res) => {
+  const currentRate = await getExchangeRate();
+  const request = new paypal.orders.OrdersCreateRequest();
+  const total = currentRate * req.body.DEROAmount;
+  request.prefer("return=representation")
+  request.requestBody({
+    intent: "CAPTURE",
+    purchase_units: [
+      {
+        amount: {
+          currency_code: "USD",
+          value: total,
+          breakdown: {
+            item_total: {
+              currency_code: "USD",
+              value: total,
+            },
+          },
+        },
+        items: {
+          name: `DERO to ${req.body.walletAddress}`,
+          unit_amount: {
+            currency_code: "USD",
+            value: currentRate,
+          },
+          quantity: req.body.DEROAmount,
+        },
+      },
+    ],
+  })
+
+  try {
+    const order = await paypalClient.execute(request);
+    res.json({ id: order.result.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
-  else {
-    response.status(402).send('Transaction is not valid');
-  }
-});
+})
 
 app.listen(PORT, () => {
   console.log(`Listening on ${PORT}`);
@@ -33,7 +89,7 @@ app.listen(PORT, () => {
 
 
 //=========================== EFFECTUATORS =================================
-const validateTXHandler = async (txInfo) => {
+const storePayment = async (txInfo) => {
   const uri = `mongodb+srv://${process.env.MONGO_USERNAME}:${process.env.MONGO_PASSWORD}@deropay.7rmohib.mongodb.net/?retryWrites=true&w=majority`;
   const client = new MongoClient(uri);
 
@@ -62,52 +118,30 @@ const validateTXHandler = async (txInfo) => {
 
 //Validates the transaction & stores it in the database
 const validateTX = async (txInfo) => {
-  const transactionID = txInfo.txid;
-  const transactionProof = txInfo.txProof;
-  const transactionAmount = txInfo.DEROPrice;
-  const transactionAddress = txInfo.destinationWalletAddress;
-
-  const browser = await puppeteer.launch({
-    executablePath: '/usr/bin/google-chrome',
-  });
-  const page = await browser.newPage();
-  await page.goto(`https://explorer.dero.io/tx/${transactionID}`, {waitUntil: "networkidle2"});
-  const submitButton = await page.$x('/html/body/div[2]/div[2]/table/tbody/tr[3]/td/form/input[3]');
-  await page.waitForSelector('input[name=txproof]');
-  await page.$eval('input[name=txproof]', (el, value) => el.value = value, transactionProof);
-  submitButton[0].click();
-  await page.waitForSelector('font');
-  let result = await page.$('font');
-  let value = await result.evaluate(el => el.textContent);
-
-  console.log(value);
-
-  await browser.close();
-
-
-  let txStatus = value.slice(0, 128);
-  console.log(txStatus);
-  let DEROSent = parseFloat(txStatus.split(' ')[2]);
-  console.log(DEROSent);
-  let DEROAddress = txStatus.split(' ')[0];
+  //Paypal logic
 
   
   if (DEROSent == undefined) {
-    console.log('Transaction not found');
+    //Check if the transaction already exists in the database
     return false;
   }
   else if (DEROSent != transactionAmount) {
-    console.log('Transaction amount is not valid');
+    //Check if the transaction amount is valid
     return false;
   }
   else if (DEROSent == transactionAmount && DEROAddress == transactionAddress) {
-    console.log('Transaction is valid');
+    
     return true;
   }
 }
 
 const saveTX = async (client, txInfo) => {
   const result = await client.db('DEROPay').collection('TXs').insertOne(txInfo);
-
   console.log(`New TX Created: ${result.insertedId}`);
+
+  await releaseDERO(DEROAmount, WalletAddress);
+}
+
+const releaseDERO = async (DEROAmount, walletAddress) => {
+  //Release DERO
 }
