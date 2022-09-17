@@ -58,7 +58,7 @@ const storeItems = new Map([
 ])
 
 app.post("/create-order", async (req, res) => {
-  const wallet = req.body.items.wallet
+  //const wallet = req.body.items.wallet
   const request = new paypal.orders.OrdersCreateRequest()
   const total = req.body.items.reduce((sum, item) => {
     return sum + storeItems.get(item.id).price * item.quantity
@@ -110,15 +110,16 @@ app.post("/capture-order", async (req, res) => {
 
     console.log(`Response: ${JSON.stringify(response)}`);
     console.log(`Capture: ${JSON.stringify(response.result)}`);
+
+    console.log(capture);
     
-    const paymentInfo = capture.result.purchase_units[0].payments.captures[0];
+    //const paymentInfo = capture.result.purchase_units[0].payments.captures[0];
     //const DEROAmount = paymentInfo.amount.value;
 
     const client = new MongoClient(process.env.DB_URL, { useUnifiedTopology: true });
     try {
       await client.connect();
-      await validateTX();
-      await transactionDBHandler(client, paymentInfo, DEROAmount, walletAddress);
+      await transactionDBHandler(client, capture, quantity, wallet);
     } catch (e) {
       res.status(500).json({ error: e.message })
     } finally {
@@ -133,15 +134,48 @@ app.listen(PORT, () => {
   console.log(`Listening on ${PORT}`);
 });
 
-const transactionDBHandler = async (client, paymentInfo, DEROAmount, walletAddress) => {
-  const result = await client.db('BuyDERO').collection('Payment').insertOne(paymentInfo);
+const transactionDBHandler = async (client, capture, quantity, wallet) => {
+  const result = await client.db('BuyDERO').collection('Purchase').insertOne(capture);
   console.log(`New TX Created: ${result.insertedId}`);
+  
+  if (getVaultBalance() < quantity) {
+    res.status(500).json({ error: 'Our vault wallet is waiting for a refill process. Your DEROs will be manually dispatched as soon as possible, We\'re sorry for any inconvenience caused.' });
+    return 1
+  }
 
-  await releaseDERO(DEROAmount, walletAddress);
+  await releaseDERO(quantity, wallet);
+}
+
+const getVaultBalance = async () => {
+  let data = JSON.stringify({
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "GetBalance"
+  });
+
+  let config = {
+    method: 'post',
+    url: 'http://127.0.0.1:10103/json_rpc',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${btoa(process.env.WALLET_USER_PASS)}`
+    },
+    data: data
+  };
+
+  axios(config)
+  .then(function (response) {
+    console.log(JSON.stringify(response.data));
+    return response.result.balance;
+  })
+  .catch(function (error) {
+    console.log(error);
+    res.status(500).json({ error: 'Oops! Something went wrong with the vault wallet. Your DEROs will be manually dispatched as soon as possible, We\'re sorry for any inconvenience caused.' });
+    return 1
+  });
 }
 
 const releaseDERO = async (quantity, wallet) => {
-  let axios = require('axios');
   let data = JSON.stringify({
     "jsonrpc": "2.0",
     "id": "1",
@@ -170,6 +204,6 @@ const releaseDERO = async (quantity, wallet) => {
   })
   .catch(function (error) {
     console.log(error);
-    res.status(500).json({ error: 'Transaction failed due to an internal server error. Your DERO will be dispatched manually, We\'re sorry for any inconvenience caused.' });
+    res.status(500).json({ error: 'DERO Transfer failed due to an internal server error. Your DEROs will be manually dispatched as soon as possible, We\'re sorry for any inconvenience caused.' });
   });
 }
