@@ -17,13 +17,17 @@ app.use(express.urlencoded({ extended: true }));
 
 const clientID = process.env.PAYPAL_CLIENT_ID;
 const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+const walletServerURI = process.env.WALLET_SERVER_URI;
 
 const Environment = process.env.NODE_ENV === "production" ? paypal.core.LiveEnvironment : paypal.core.SandboxEnvironment;
 const paypalClient = new paypal.core.PayPalHttpClient( new Environment(clientID, clientSecret));
 
+//Set it to zero to disable the service fee
+const serviceFeePercentage = 2;
+
 var exchangeRate;
 function getExchangeRate () {
-  var config = {
+  let config = {
     method: 'get',
     url: 'https://api.coinranking.com/v2/coin/9jgCbgZ_J9mj-',
     headers: {
@@ -33,8 +37,10 @@ function getExchangeRate () {
 
   axios(config)
   .then(function (response) {
-    console.log(response.data.data.coin.price);
-    exchangeRate = parseFloat((parseFloat(response.data.data.coin.price)).toFixed(2));
+    exchangeRate = parseFloat(response.data.data.coin.price);
+    exchangeRate = parseFloat((exchangeRate).toFixed(2));
+    exchangeRate = exchangeRate + ( exchangeRate * (serviceFeePercentage / 100));
+    exchangeRate = parseFloat((exchangeRate).toFixed(2));
     console.log(exchangeRate);
   })
   .catch(function (error) {
@@ -51,9 +57,10 @@ app.post("/create-order", async (req, res) => {
       [1, { price: exchangeRate, name: "DERO" }],
     ]);
     const request = new paypal.orders.OrdersCreateRequest()
-    const total = req.body.items.reduce((sum, item) => {
+    let total = req.body.items.reduce((sum, item) => {
       return sum + storeItems.get(item.id).price * item.quantity
     }, 0)
+    total = parseFloat((total).toFixed(2));
     request.prefer("return=representation")
     request.requestBody({
       intent: "CAPTURE",
@@ -100,10 +107,14 @@ app.post("/capture-order", async (req, res) => {
   const wallet = req.body.wallet;
 
   try {
-    const capture = await paypalClient.execute(request);    
+    let capture = await paypalClient.execute(request);    
     console.log(`Capture: ${JSON.stringify(capture)}`);
 
     const quantity = parseFloat((capture.result.purchase_units[0].payments.captures[0].amount.value / exchangeRate).toFixed(5));
+    
+    capture["DERO_Wallet"] = wallet;
+    capture["DERO_Quantity"] = quantity;
+    
     console.log('Quantity: ' + quantity);
     console.log('Gross Value: ' + capture.result.purchase_units[0].payments.captures[0].amount.value);
     console.log('Exchange Rate: ' + exchangeRate);
@@ -112,7 +123,7 @@ app.post("/capture-order", async (req, res) => {
 
     try {
       await client.connect();
-      await transactionDBHandler(client, capture, quantity, wallet);
+      await transactionDBHandler(res, client, capture, quantity, wallet);
     } catch (e) {
       res.status(500).json({ error: e.message })
     } finally {
@@ -127,19 +138,21 @@ app.listen(PORT, () => {
   console.log(`Listening on ${PORT}`);
 });
 
-const transactionDBHandler = async (client, capture, quantity, wallet) => {
+const transactionDBHandler = async (res, client, capture, quantity, wallet) => {
   const result = await client.db('BuyDERO').collection('Purchase').insertOne(capture);
   console.log(`User Checkout saved: ${result.insertedId}`);
   
-  if (getVaultBalance() < quantity) {
+  if (getVaultBalance(res) < quantity) {
     res.status(500).json({ error: 'Our vault wallet is waiting for a refill process. Your DEROs will be manually dispatched as soon as possible, We\'re sorry for any inconvenience caused.' });
   } else {
-    await releaseDERO(quantity, wallet);
+    console.log(quantity * 100000);
+    await releaseDERO(res, quantity, wallet);
     console.log(`Released ${quantity} DEROs to ${wallet}`);
   }
 }
 
-const getVaultBalance = async () => {
+const getVaultBalance = async (res) => {
+  let balance;
   let data = JSON.stringify({
     "jsonrpc": "2.0",
     "id": "1",
@@ -148,7 +161,7 @@ const getVaultBalance = async () => {
 
   let config = {
     method: 'post',
-    url: 'http://127.0.0.1:10103/json_rpc',
+    url: walletServerURI + '/json_rpc',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Basic ${btoa(process.env.WALLET_USER_PASS)}`
@@ -159,30 +172,33 @@ const getVaultBalance = async () => {
   axios(config)
   .then(function (response) {
     console.log(JSON.stringify(response.data));
-    return response.result.balance;
+    console.log(response.data.result.balance);
+    balance = response.data.result.balance;
   })
   .catch(function (error) {
     console.log(error);
     res.status(500).json({ error: 'Oops! Something went wrong with the vault wallet. Your DEROs will be manually dispatched as soon as possible, We\'re sorry for any inconvenience caused.' });
     return 1
   });
+  return balance;
 }
 
-const releaseDERO = async (quantity, wallet) => {
+const releaseDERO = async (res, quantity, wallet) => {
   let data = JSON.stringify({
     "jsonrpc": "2.0",
     "id": "1",
     "method": "transfer",
     "params": {
-      "scid": "00000000000000000000000000000000",
-      "destination": wallet,
-      "amount": quantity * 100000
+      "transfers": [{
+        "destination": wallet,
+        "amount": quantity * 1 //* 100000
+      }]
     }
   });
 
   let config = {
     method: 'post',
-    url: 'http://127.0.0.1:10103/json_rpc',
+    url:  walletServerURI + '/json_rpc',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Basic ${btoa(process.env.WALLET_USER_PASS)}`
@@ -192,8 +208,8 @@ const releaseDERO = async (quantity, wallet) => {
 
   await axios(config)
   .then(function (response) {
-    console.log(JSON.stringify(response.data));
-    res.status(201).json({ transactionID: 'Transaction dispatched: ' + response.result.txid });
+    console.log('Transaction dispatched: ' + response.data.result.txid);
+    res.status(201).json({ transactionID: 'Transaction dispatched: ' + response.data.result.txid });
   })
   .catch(function (error) {
     console.log(error);
