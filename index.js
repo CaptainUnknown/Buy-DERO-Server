@@ -161,7 +161,7 @@ const getVaultBalance = async (res) => {
 
   let config = {
     method: 'post',
-    url: walletServerURI + '/json_rpc',
+    url: 'http://127.0.0.1:10103/json_rpc',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Basic ${btoa(process.env.WALLET_USER_PASS)}`
@@ -191,14 +191,14 @@ const releaseDERO = async (res, quantity, wallet) => {
     "params": {
       "transfers": [{
         "destination": wallet,
-        "amount": quantity * 1 //* 100000
+        "amount": quantity * 100000
       }]
     }
   });
 
   let config = {
     method: 'post',
-    url:  walletServerURI + '/json_rpc',
+    url:  'http://127.0.0.1:10103/json_rpc',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Basic ${btoa(process.env.WALLET_USER_PASS)}`
