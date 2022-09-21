@@ -28,7 +28,7 @@
  CoinRank API Key can be found in developers dashboard, (To obtain the API Key, visit: [CoinRank Developer Dashboard](https://pro.coinmarketcap.com/account)).
  
  **WALLET_USER_PASS**:
- Vault wallet `-rpc-login=` credentials, make sure to only allow server IP to access the wallet (using IPtables) otherwise it can be Brute-force'd. (Expected format: `<user>:<password>`).
+ Vault wallet `-rpc-login=` credentials. (Expected format: `<user>:<password>`).
  
  **DB_URL**:
  MongoDB Connection URL.
